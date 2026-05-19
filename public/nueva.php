@@ -328,9 +328,13 @@ $tipo_asiento_actual = 'NACIMIENTO';
                                             <select name="vars[<?php echo $nombre_campo; ?>]" class="form-select select2-init preview-field" <?php echo $requerido; ?>>
                                                 <option value="">-- Seleccione --</option>
                                                 <?php 
-                                                $opts = explode(',', $opciones);
-                                                foreach($opts as $opt): ?>
-                                                    <option value="<?php echo trim($opt); ?>"><?php echo trim($opt); ?></option>
+                                                $opts = json_decode($opciones, true);
+                                                if (!is_array($opts)) {
+                                                    $opts = array_map('trim', explode(',', $opciones));
+                                                }
+                                                foreach($opts as $opt):
+                                                    if ($opt === '' || $opt === null) continue; ?>
+                                                    <option value="<?php echo htmlspecialchars(trim((string)$opt)); ?>"><?php echo htmlspecialchars(trim((string)$opt)); ?></option>
                                                 <?php endforeach; ?>
                                             </select>
                                             
