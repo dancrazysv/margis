@@ -19,6 +19,35 @@ function responder($status, $mensaje, $extra = []) {
     exit;
 }
 
+function fechaEnLetrasDesdeIso($fechaIso) {
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)$fechaIso)) {
+        return '';
+    }
+    $timestamp = strtotime($fechaIso);
+    if (!$timestamp) return '';
+    $meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+    return date('j', $timestamp) . ' de ' . $meses[(int)date('n', $timestamp) - 1] . ' de ' . date('Y', $timestamp);
+}
+
+function normalizarTexto($valor) {
+    return trim((string)$valor);
+}
+
+function obtenerFechaEventoDesdeVars($vars) {
+    if (!is_array($vars)) return '';
+    if (!empty($vars['fecha_evento']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $vars['fecha_evento'])) {
+        return $vars['fecha_evento'];
+    }
+    foreach ($vars as $key => $value) {
+        if (strpos($key, '_letras') !== false) continue;
+        if (!preg_match('/^fecha/i', $key)) continue;
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)$value)) {
+            return $value;
+        }
+    }
+    return '';
+}
+
 // Iniciar sesión solo si no está iniciada
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -52,6 +81,17 @@ $lugar = trim($_POST['lugar'] ?? '');
 $nombre_el = trim($_POST['nombre_el'] ?? '');
 $nombre_ella = trim($_POST['nombre_ella'] ?? '');
 $plantilla_id = (int)($_POST['plantilla_id'] ?? 0);
+$sujeto_mat = trim($_POST['sujeto_mat'] ?? 'EL');
+$leyenda_tipo = trim($_POST['leyenda_tipo'] ?? '');
+$apellidos_ext = trim($_POST['apellidos_ext'] ?? '');
+$vars = isset($_POST['vars']) && is_array($_POST['vars']) ? $_POST['vars'] : [];
+$vars_cargo = isset($_POST['vars_cargo']) && is_array($_POST['vars_cargo']) ? $_POST['vars_cargo'] : [];
+$vars_nombre = isset($_POST['vars_nombre']) && is_array($_POST['vars_nombre']) ? $_POST['vars_nombre'] : [];
+
+// Foliación obligatoria
+if ($folio_o === '') {
+    responder('error', 'El campo folio es obligatorio.');
+}
 
 // Número de trámite
 $num_tramite = trim($_POST['num_tramite'] ?? '');
@@ -60,10 +100,8 @@ if (empty($num_tramite) && isset($_POST['tramite_anio']) && isset($_POST['tramit
 }
 
 // Fecha evento
-$fecha_evento = '';
-if (!empty($_POST['vars']['fecha_boda'])) {
-    $fecha_evento = $_POST['vars']['fecha_boda'];
-} elseif (!empty($_POST['fecha_boda'])) {
+$fecha_evento = obtenerFechaEventoDesdeVars($vars);
+if (empty($fecha_evento) && !empty($_POST['fecha_boda']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $_POST['fecha_boda'])) {
     $fecha_evento = $_POST['fecha_boda'];
 }
 
@@ -89,7 +127,7 @@ if (empty($iniciales_partida)) {
 // VERIFICAR DUPLICADOS (si aplica)
 // =====================================================
 if (!$confirmar_duplicado && !empty($fecha_evento) && !empty($n_partida)) {
-    $check = $conn->prepare("SELECT id FROM margi WHERE NPartida = ? AND LibroO = ? AND fechaevento = ? LIMIT 5");
+    $check = $conn->prepare("SELECT id, libro_nmargi_concat, TxtMargi1, FechaC, estado FROM margi WHERE NPartida = ? AND LibroO = ? AND fechaevento = ? LIMIT 5");
     if ($check) {
         $check->bind_param("sss", $n_partida, $libro_o, $fecha_evento);
         $check->execute();
@@ -117,22 +155,60 @@ $texto_final = '';
 if ($plantilla_id > 0) {
     $plantilla = PlantillaManager::getPlantillaCompleta($conn, $plantilla_id);
     if ($plantilla) {
-        $texto_final = $plantilla['cuerpo_legal'];
-        
-        // Reemplazar variables básicas
-        $texto_final = str_replace('{nombre_el}', $nombre_el, $texto_final);
-        $texto_final = str_replace('{nombre_ella}', $nombre_ella, $texto_final);
-        $texto_final = str_replace('{lugar}', $lugar, $texto_final);
-        
-        // Fecha actual
-        $meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
-        $fecha_hoy = date('j') . ' de ' . $meses[date('n')-1] . ' de ' . date('Y');
-        $texto_final = str_replace('{fecha_hoy_letras}', $fecha_hoy, $texto_final);
-        
-        // Limpiar variables no reemplazadas
-        $texto_final = preg_replace('/\{[^}]+\}/', '', $texto_final);
-        $texto_final = preg_replace('/\s+/', ' ', $texto_final);
-        $texto_final = trim($texto_final);
+        $datos_render = [];
+
+        foreach ($vars as $key => $value) {
+            $key = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$key);
+            if ($key === '') continue;
+            $valor = normalizarTexto($value);
+            if ($valor === '') continue;
+            $datos_render[$key] = $valor;
+
+            if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $valor)) {
+                $letras = fechaEnLetrasDesdeIso($valor);
+                if ($letras !== '') {
+                    $datos_render[$key . '_letras'] = $letras;
+                    $datos_render[$key] = $letras; // Compatibilidad con vista previa y textos legales
+                }
+            }
+        }
+
+        foreach ($vars_cargo as $key => $cargo) {
+            $key = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$key);
+            if ($key === '') continue;
+            $cargo = normalizarTexto($cargo);
+            $nombre = normalizarTexto($vars_nombre[$key] ?? '');
+            if ($cargo !== '' || $nombre !== '') {
+                $datos_render[$key] = trim($cargo . ' ' . $nombre);
+            }
+        }
+
+        $datos_render['lugar'] = $lugar;
+        $datos_render['nombre_el'] = $nombre_el;
+        $datos_render['nombre_ella'] = $nombre_ella;
+        $datos_render['leyenda_apellido'] = PlantillaManager::armarLeyendaApellido($leyenda_tipo, $nombre_el, $apellidos_ext);
+
+        if (!empty($num_tramite)) {
+            $datos_render['num_tramite'] = $num_tramite;
+        }
+        if (!empty($anio_p)) $datos_render['anio_p'] = $anio_p;
+        if (!empty($libro_p)) $datos_render['libro_p'] = $libro_p;
+        if (!empty($n_partida)) $datos_render['n_partida'] = $n_partida;
+        if (!empty($folio_o)) $datos_render['folio_p'] = $folio_o;
+        if (!empty($tomo_p)) $datos_render['tomo_p'] = $tomo_p;
+        if (!empty($fecha_evento)) {
+            $datos_render['fecha_evento'] = fechaEnLetrasDesdeIso($fecha_evento) ?: $fecha_evento;
+            $datos_render['fecha_evento_iso'] = $fecha_evento;
+        }
+
+        $texto_final = PlantillaManager::renderizarTexto(
+            $plantilla['cuerpo_legal'],
+            $datos_render,
+            $sujeto_mat,
+            $nombre_el,
+            $nombre_ella,
+            $plantilla['tipo_asiento'] ?? 'NACIMIENTO'
+        );
     }
 }
 
